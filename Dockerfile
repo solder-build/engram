@@ -7,7 +7,16 @@ FROM node:24-slim AS base
 RUN apt-get update && apt-get install -y --no-install-recommends \
     dumb-init \
     git \
+    ca-certificates \
+    python3 \
+    make \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
+
+# Configure git to use HTTPS (some npm deps use git:// protocol)
+RUN git config --global url."https://github.com/".insteadOf git@github.com: && \
+    git config --global url."https://github.com/".insteadOf ssh://git@github.com/ && \
+    git config --global url."https://".insteadOf git://
 
 # Install OpenClaw globally
 RUN npm install -g openclaw@latest
