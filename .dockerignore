@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Environment (secrets must be passed at runtime, never baked in)
+.env
+
+# Git
+.git/
+.gitignore
+
+# Data (mounted as volume, not baked into image)
+data/
+
+# Documentation
+*.md
+!openclaw-workspace/*.md
+
+# IDE / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Build artifacts
+dist/

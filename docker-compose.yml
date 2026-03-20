@@ -1,0 +1,80 @@
+# Engram Docker Compose — isolated agent execution
+# No host network, no privileged mode, no access to host credentials
+
+services:
+  engram-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: engram-agent
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+    volumes:
+      # Persist decision memory across container restarts
+      - ./data:/app/data
+    # No host network — only allow outbound connections
+    networks:
+      - engram-net
+    # Security: no privileged mode, no extra capabilities, read-only root fs
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    # Node needs writable tmpdir and home for OpenClaw
+    tmpfs:
+      - /tmp:size=64m
+      - /home/engram/.npm:size=32m
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+
+  engram-openclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: engram-openclaw
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+    command: ["openclaw", "gateway", "start"]
+    volumes:
+      - ./data:/app/data
+    ports:
+      # Bind to localhost only — not exposed to external network
+      - "127.0.0.1:18789:18789"
+    networks:
+      - engram-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+      - /home/engram/.openclaw:size=64m
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+    profiles:
+      # Only starts when explicitly requested: docker compose --profile openclaw up
+      - openclaw
+
+networks:
+  engram-net:
+    driver: bridge
+    internal: false  # Allow outbound (RPC endpoints, Cortex API)

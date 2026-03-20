@@ -149,7 +149,7 @@ cp .env.example .env
 - Node.js >= 24
 - npm
 
-That's it. No Docker, no database, no external services beyond the Cortex API (which gracefully degrades if unavailable).
+That's it. No database, no external services beyond the Cortex API (which gracefully degrades if unavailable). Docker is optional -- see the Docker section below for isolated execution.
 
 ## Project Structure
 
@@ -164,10 +164,74 @@ engram/
     lending.js      # Aave V3 lending operations via WDK
     memory.js       # Persistent decision history + pattern matching
     demo.js         # Side-by-side demo (memory vs. no memory)
+  skills/
+    wdk/            # WDK skill definition + chain references
+    cortex/         # Cortex market intelligence skill
+  openclaw-workspace/
+    AGENTS.md       # Agent capabilities and workflows
+    SOUL.md         # Agent personality and constraints
+    ...             # Other OpenClaw workspace files
   data/
     memory.json     # Decision history (auto-created)
+  Dockerfile        # Isolated container build
+  docker-compose.yml # Service definitions
+  .dockerignore
   .env.example      # Environment variable template
 ```
+
+## Docker
+
+Running Engram in Docker isolates wallet operations from host credentials (SSH keys, GCP creds, GitHub tokens). The container has no access to the host filesystem.
+
+### Build
+
+```bash
+docker compose build
+```
+
+### Run the Agent (standalone loop)
+
+```bash
+# Single tick, demo mode (default)
+docker compose run --rm engram-agent
+
+# Single tick, dry-run with real data
+docker compose run --rm engram-agent node src/index.js --dry-run --once
+
+# Continuous loop
+docker compose run --rm engram-agent node src/index.js --demo --interval=30
+```
+
+### Run OpenClaw Gateway Mode
+
+The gateway binds to `127.0.0.1:18789` only (not exposed externally).
+
+```bash
+docker compose --profile openclaw up engram-openclaw
+```
+
+Then send messages to the agent:
+
+```bash
+openclaw agent --agent engram --message "Check my wallet balance" --gateway http://localhost:18789
+```
+
+### Environment Variables
+
+Secrets (seed phrases, API keys) are passed via `.env` at runtime. They are never baked into the Docker image. Copy `.env.example` to `.env` and fill in values before running.
+
+### Persistent Memory
+
+The `data/` directory is volume-mounted into the container. Decision history in `data/memory.json` persists across container restarts.
+
+### Security
+
+- Non-root user (`engram`, uid 1001) inside the container
+- Read-only root filesystem (writable tmpfs for `/tmp` only)
+- All Linux capabilities dropped, `no-new-privileges` enforced
+- No host network, no privileged mode
+- Memory limited to 512MB, CPU limited to 1 core
+- Seed phrases and secrets passed only via environment variables at runtime
 
 ## Limitations
 
