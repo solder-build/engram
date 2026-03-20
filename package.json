@@ -1,0 +1,31 @@
+{
+  "name": "engram",
+  "version": "0.1.0",
+  "description": "Autonomous DeFi treasury agent with persistent market memory — powered by Cortex + Tether WDK",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "demo": "node src/demo.js"
+  },
+  "keywords": [
+    "defi",
+    "agent",
+    "wdk",
+    "tether",
+    "cortex",
+    "memory",
+    "autonomous"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@tetherto/wdk": "^1.0.0-beta.6",
+    "@tetherto/wdk-protocol-lending-aave-evm": "^1.0.0-beta.3",
+    "@tetherto/wdk-wallet-evm": "^1.0.0-beta.10",
+    "chalk": "^5.6.2",
+    "dotenv": "^17.3.1"
+  }
+}
