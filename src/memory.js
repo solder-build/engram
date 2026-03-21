@@ -141,21 +141,34 @@ export async function getMemoryContext() {
 }
 
 /**
- * Find similar past conditions and what the agent did.
- * Compares anomaly presence, market direction, and health factor.
+ * Find similar past conditions and compute memory-driven adjustments.
+ * Returns both a recommendation string AND actionable threshold modifiers
+ * that the strategy engine uses to change its behavior.
  *
  * @param {{ hasAnomalies: boolean, healthFactor: number | null, idleUsdt: boolean }} currentConditions
- * @returns {Promise<{ similar: Decision[], recommendation: string }>}
+ * @returns {Promise<MemoryInsight>}
  */
 export async function compareWithHistory(currentConditions) {
   const store = await loadStore();
   const all = store.decisions;
 
+  /** @type {MemoryInsight} */
+  const insight = {
+    similar: [],
+    recommendation: '',
+    adjustments: {
+      zScoreModifier: 0,      // negative = more sensitive, positive = less sensitive
+      yieldCooldown: false,    // true = suppress yield supply temporarily
+      urgencyBoost: false,     // true = act faster on risk-off
+      skipSupply: false,       // true = block supply entirely (recent bad outcome)
+    },
+    hasMemory: all.length > 0,
+    decisionCount: all.length,
+  };
+
   if (all.length === 0) {
-    return {
-      similar: [],
-      recommendation: 'No history to compare against. Operating without memory context.',
-    };
+    insight.recommendation = 'No history. Operating without memory context.';
+    return insight;
   }
 
   // Score each past decision by similarity to current conditions
@@ -163,15 +176,13 @@ export async function compareWithHistory(currentConditions) {
     let score = 0;
     const ctx = d.marketContext;
 
-    // Anomaly match
     const pastHadAnomalies = (ctx.anomalyCount || 0) > 0;
     if (pastHadAnomalies === currentConditions.hasAnomalies) score += 3;
 
-    // Idle USDT match
     if (d.action === 'supply' && currentConditions.idleUsdt) score += 2;
     if (d.action === 'withdraw' && currentConditions.hasAnomalies) score += 2;
 
-    // Recency bonus (more recent = more relevant)
+    // Recency bonus
     const ageHours = (Date.now() - new Date(d.timestamp).getTime()) / 3.6e6;
     if (ageHours < 1) score += 2;
     else if (ageHours < 24) score += 1;
@@ -180,33 +191,99 @@ export async function compareWithHistory(currentConditions) {
   });
 
   scored.sort((a, b) => b.score - a.score);
-  const similar = scored.slice(0, 5).map((s) => s.decision);
+  insight.similar = scored.slice(0, 10).map((s) => s.decision);
 
-  // Build recommendation from patterns
+  // ── Compute memory-driven adjustments ──────────────────────────────
+
+  // 1. If past withdrawals during anomalies were successful, lower the
+  //    Z-score threshold (trigger risk-off earlier next time)
+  const pastAnomalyWithdrawals = all.filter(
+    (d) => d.action === 'withdraw' && (d.marketContext.anomalyCount || 0) > 0
+  );
+  const successfulWithdrawals = pastAnomalyWithdrawals.filter(
+    (d) => d.outcome === 'success'
+  );
+  if (successfulWithdrawals.length >= 1) {
+    // Each successful withdrawal lowers threshold by 0.3 (max -1.0)
+    insight.adjustments.zScoreModifier = -Math.min(successfulWithdrawals.length * 0.3, 1.0);
+    insight.adjustments.urgencyBoost = successfulWithdrawals.length >= 2;
+  }
+
+  // 2. If a recent supply was followed by an anomaly within the next few
+  //    decisions, add a cooldown on supply (learned: don't supply before storms)
+  const recentDecisions = all.slice(-5);
+  const recentSupply = recentDecisions.find((d) => d.action === 'supply');
+  const recentWithdrawAfterSupply = recentSupply
+    ? recentDecisions.find(
+        (d) =>
+          d.action === 'withdraw' &&
+          new Date(d.timestamp) > new Date(recentSupply.timestamp)
+      )
+    : null;
+  if (recentWithdrawAfterSupply) {
+    insight.adjustments.yieldCooldown = true;
+  }
+
+  // 3. If a past supply had a failed outcome, block supply entirely
+  const recentFailedSupply = all
+    .slice(-10)
+    .find((d) => d.action === 'supply' && d.outcome && d.outcome.startsWith('failed'));
+  if (recentFailedSupply) {
+    insight.adjustments.skipSupply = true;
+  }
+
+  // 4. If we've withdrawn and re-supplied multiple times recently (churn),
+  //    suppress supply to avoid oscillation
+  const last8 = all.slice(-8);
+  const withdrawCount = last8.filter((d) => d.action === 'withdraw').length;
+  const supplyCount = last8.filter((d) => d.action === 'supply').length;
+  if (withdrawCount >= 2 && supplyCount >= 2) {
+    insight.adjustments.yieldCooldown = true;
+  }
+
+  // ── Build recommendation text ──────────────────────────────────────
+
   const actionCounts = {};
-  similar.forEach((d) => {
+  insight.similar.forEach((d) => {
     actionCounts[d.action] = (actionCounts[d.action] || 0) + 1;
   });
 
   const topAction = Object.entries(actionCounts).sort((a, b) => b[1] - a[1])[0];
-  let recommendation;
-
   if (topAction) {
     const [action, count] = topAction;
-    recommendation = `In ${count}/${similar.length} similar past situations, the agent chose "${action}".`;
+    insight.recommendation = `In ${count}/${insight.similar.length} similar past situations, the agent chose "${action}".`;
 
-    // Check outcomes
-    const withOutcome = similar.filter((d) => d.outcome && d.action === action);
+    const withOutcome = insight.similar.filter((d) => d.outcome && d.action === action);
     if (withOutcome.length > 0) {
       const successRate = withOutcome.filter((d) => d.outcome === 'success').length / withOutcome.length;
-      recommendation += ` Success rate: ${(successRate * 100).toFixed(0)}%.`;
+      insight.recommendation += ` Success rate: ${(successRate * 100).toFixed(0)}%.`;
     }
   } else {
-    recommendation = 'No clear pattern from past decisions.';
+    insight.recommendation = 'No clear pattern from past decisions.';
   }
 
-  return { similar, recommendation };
+  // Append adjustment explanations
+  if (insight.adjustments.zScoreModifier !== 0) {
+    insight.recommendation += ` Threshold adjusted by ${insight.adjustments.zScoreModifier.toFixed(1)} based on ${successfulWithdrawals.length} past successful withdrawals.`;
+  }
+  if (insight.adjustments.yieldCooldown) {
+    insight.recommendation += ' Supply cooldown active — recent churn or supply-then-withdraw pattern detected.';
+  }
+  if (insight.adjustments.skipSupply) {
+    insight.recommendation += ' Supply BLOCKED — recent supply had failed outcome.';
+  }
+
+  return insight;
 }
+
+/**
+ * @typedef {Object} MemoryInsight
+ * @property {Decision[]} similar
+ * @property {string} recommendation
+ * @property {{ zScoreModifier: number, yieldCooldown: boolean, urgencyBoost: boolean, skipSupply: boolean }} adjustments
+ * @property {boolean} hasMemory
+ * @property {number} decisionCount
+ */
 
 /**
  * Update the outcome of a past decision (after execution).

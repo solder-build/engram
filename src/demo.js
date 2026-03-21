@@ -3,8 +3,9 @@
 /**
  * Engram — Demo Script for Video
  *
- * Demonstrates the "money shot": agent WITH memory vs agent WITHOUT memory
- * facing the same market conditions makes different (better) decisions.
+ * Demonstrates REAL behavioral differences between an agent WITH memory
+ * and one WITHOUT. Memory adjusts Z-score thresholds, blocks supply
+ * after churn, and makes demonstrably different decisions.
  *
  * Usage:
  *   node src/demo.js
@@ -12,7 +13,7 @@
 
 import 'dotenv/config';
 import chalk from 'chalk';
-import { runStrategies, evaluateStateless } from './strategies.js';
+import { runStrategies, evaluateStateless, ANOMALY_ZSCORE_THRESHOLD } from './strategies.js';
 import memory from './memory.js';
 
 const hr = () => console.log(chalk.gray('─'.repeat(72)));
@@ -20,11 +21,12 @@ const ts = () => chalk.gray(new Date().toISOString());
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ── Simulated market scenarios ────────────────────────────────────────
+// Designed so that memory CHANGES the decision in scenarios 3 and 4.
 
 const SCENARIOS = [
   {
     name: 'Normal Market — Idle Capital',
-    description: 'Markets are calm. The agent has 500 USDT sitting idle in the wallet.',
+    description: 'Markets are calm. 500 USDT sitting idle.',
     market: {
       trending: [{ slug: 'btc-eoy-target', title: 'BTC EOY target' }],
       anomalies: [],
@@ -33,30 +35,25 @@ const SCENARIOS = [
     wallet: {
       address: '0xEngram_Demo_001',
       ethBalance: 500000000000000000n,
-      usdtBalance: 500_000000n, // 500 USDT
+      usdtBalance: 500_000000n,
     },
     lending: {
       totalCollateral: '0.00',
       totalDebt: '0.00',
       healthFactor: 'N/A',
-      ltv: '0.00%',
       availableBorrows: '0.00',
     },
   },
   {
-    name: 'Market Anomaly Detected',
-    description: 'Cortex detects a price spike (Z-score 3.4) on a major market. Agent has funds in Aave.',
+    name: 'Anomaly Detected — First Time',
+    description: 'Cortex detects a price spike (Z-score 3.2). Agent has funds in Aave.',
     market: {
       trending: [{ slug: 'btc-eoy-target', title: 'BTC EOY target' }],
       anomalies: [
         {
           market: 'btc-eoy-target',
-          anomalies: [
-            { price: 102000, zScore: 3.4, timestamp: new Date().toISOString() },
-          ],
-          mean: 95000,
-          stdDev: 2000,
-          tradeCount: 1200,
+          anomalies: [{ price: 102000, zScore: 3.2, timestamp: new Date().toISOString() }],
+          mean: 95000, stdDev: 2000, tradeCount: 1200,
         },
       ],
       timestamp: new Date().toISOString(),
@@ -64,30 +61,28 @@ const SCENARIOS = [
     wallet: {
       address: '0xEngram_Demo_001',
       ethBalance: 200000000000000000n,
-      usdtBalance: 50_000000n, // 50 USDT
+      usdtBalance: 50_000000n,
     },
     lending: {
       totalCollateral: '1500.00',
       totalDebt: '200.00',
       healthFactor: '2.50',
-      ltv: '13.33%',
       availableBorrows: '800.00',
     },
   },
   {
-    name: 'Same Anomaly Again (Memory Kicks In)',
-    description: 'Similar anomaly pattern as before. Agent with memory recalls what happened last time.',
+    // THE MONEY SHOT: Z-score 2.1 is BELOW the default threshold (2.5)
+    // so a stateless agent does nothing. But Engram's memory lowered the
+    // threshold to 1.5 based on past successful withdrawals — so it triggers.
+    name: 'Subtle Anomaly — Memory Makes The Difference',
+    description: 'Z-score 2.3 — below default threshold (2.5). Stateless agent ignores it. Memory-equipped agent catches it.',
     market: {
       trending: [{ slug: 'eth-staking-yield', title: 'ETH staking yield' }],
       anomalies: [
         {
           market: 'eth-staking-yield',
-          anomalies: [
-            { price: 4200, zScore: 2.9, timestamp: new Date().toISOString() },
-          ],
-          mean: 3800,
-          stdDev: 130,
-          tradeCount: 950,
+          anomalies: [{ price: 4050, zScore: 2.3, timestamp: new Date().toISOString() }],
+          mean: 3800, stdDev: 120, tradeCount: 800,
         },
       ],
       timestamp: new Date().toISOString(),
@@ -95,35 +90,35 @@ const SCENARIOS = [
     wallet: {
       address: '0xEngram_Demo_001',
       ethBalance: 200000000000000000n,
-      usdtBalance: 1500_000000n, // 1500 USDT (from previous withdrawal)
+      usdtBalance: 100_000000n,
     },
     lending: {
-      totalCollateral: '500.00',
-      totalDebt: '0.00',
-      healthFactor: 'N/A',
-      ltv: '0.00%',
-      availableBorrows: '400.00',
+      totalCollateral: '2000.00',
+      totalDebt: '300.00',
+      healthFactor: '2.20',
+      availableBorrows: '600.00',
     },
   },
   {
-    name: 'Health Factor Crisis',
-    description: 'Market dropped. Health factor at 1.12 — close to liquidation. Agent has USDT to repay.',
+    // MEMORY BLOCKS SUPPLY: After the supply→withdraw churn in scenarios 1-2,
+    // memory activates yieldCooldown. Stateless agent supplies, Engram holds.
+    name: 'Post-Crisis Calm — Memory Blocks Premature Supply',
+    description: 'Markets calm again, idle USDT. Stateless agent supplies. Engram remembers the recent churn and holds.',
     market: {
-      trending: [{ slug: 'market-crash-risk', title: 'Market crash risk' }],
+      trending: [{ slug: 'stable-markets', title: 'Stable markets' }],
       anomalies: [],
       timestamp: new Date().toISOString(),
     },
     wallet: {
       address: '0xEngram_Demo_001',
-      ethBalance: 100000000000000000n,
-      usdtBalance: 800_000000n, // 800 USDT
+      ethBalance: 150000000000000000n,
+      usdtBalance: 1200_000000n,
     },
     lending: {
-      totalCollateral: '2000.00',
-      totalDebt: '1600.00',
-      healthFactor: '1.12',
-      ltv: '80.00%',
-      availableBorrows: '0.00',
+      totalCollateral: '500.00',
+      totalDebt: '0.00',
+      healthFactor: 'N/A',
+      availableBorrows: '400.00',
     },
   },
 ];
@@ -136,13 +131,13 @@ async function runDemo() {
   console.log(chalk.bold.cyan('  ║              ENGRAM — Memory-Powered DeFi Agent              ║'));
   console.log(chalk.bold.cyan('  ║          Autonomous Treasury Management with Cortex          ║'));
   console.log(chalk.bold.cyan('  ╚══════════════════════════════════════════════════════════════╝\n'));
-
   console.log(chalk.gray('  Powered by: Tether WDK  |  Cortex Market Intelligence  |  Aave V3\n'));
   hr();
 
-  // Clear memory for clean demo
   await memory.clearMemory();
   console.log(ts(), chalk.dim('Memory cleared for fresh demo.\n'));
+
+  const decisions = [];
 
   for (let i = 0; i < SCENARIOS.length; i++) {
     const scenario = SCENARIOS[i];
@@ -152,7 +147,7 @@ async function runDemo() {
     console.log(chalk.gray(`  ${scenario.description}\n`));
     hr();
 
-    // Show current state
+    // Show state
     console.log(ts(), chalk.yellow('Wallet State:'));
     console.log(chalk.gray(`    ETH Balance:  ${formatEth(scenario.wallet.ethBalance)}`));
     console.log(chalk.gray(`    USDT Balance: ${formatUsdt(scenario.wallet.usdtBalance)}`));
@@ -165,37 +160,30 @@ async function runDemo() {
     console.log(chalk.gray(`    Anomalies: ${scenario.market.anomalies.length} detected`));
     if (scenario.market.anomalies.length > 0) {
       for (const a of scenario.market.anomalies) {
-        console.log(chalk.red(`    ! ${a.market}: Z-score ${a.anomalies[0].zScore}`));
+        console.log(chalk.red(`    ! ${a.market}: Z-score ${a.anomalies[0].zScore} (threshold: ${ANOMALY_ZSCORE_THRESHOLD})`));
       }
     }
     console.log('');
-
     await pause(1000);
 
-    // ── Agent WITHOUT memory ──────────────────────────────────────
+    // ── Stateless agent (NO memory) ──────────────────────────────
     console.log(chalk.bold.red('  Agent WITHOUT Memory:'));
-    const statelessAction = evaluateStateless(
-      scenario.market,
-      scenario.wallet,
-      scenario.lending
-    );
+    const statelessAction = evaluateStateless(scenario.market, scenario.wallet, scenario.lending);
     if (statelessAction) {
       console.log(chalk.red(`    Decision: ${statelessAction.strategy} → ${statelessAction.action}`));
       console.log(chalk.red(`    Reason:   ${statelessAction.reason}`));
     } else {
       console.log(chalk.red('    Decision: HOLD (no action)'));
-      console.log(chalk.red('    Reason:   No strategy triggered.'));
+      console.log(chalk.red('    Reason:   No strategy triggered — thresholds not met.'));
     }
     console.log('');
-
     await pause(1000);
 
-    // ── Agent WITH memory ─────────────────────────────────────────
+    // ── Engram agent (WITH memory) ───────────────────────────────
     console.log(chalk.bold.green('  Agent WITH Memory (Engram):'));
 
-    // Check memory for context
     const decisionCount = await memory.getDecisionCount();
-    const comparison = await memory.compareWithHistory({
+    const memoryInsight = await memory.compareWithHistory({
       hasAnomalies: scenario.market.anomalies.length > 0,
       healthFactor: parseFloat(scenario.lending.healthFactor) || null,
       idleUsdt: scenario.wallet.usdtBalance > 0n,
@@ -203,46 +191,61 @@ async function runDemo() {
 
     if (decisionCount > 0) {
       console.log(chalk.green(`    Memory: ${decisionCount} past decisions recalled`));
-      console.log(chalk.green(`    Insight: ${comparison.recommendation}`));
+      console.log(chalk.green(`    Insight: ${memoryInsight.recommendation}`));
     } else {
       console.log(chalk.green('    Memory: First run — no history yet'));
     }
 
+    // Show active adjustments
+    const adj = memoryInsight.adjustments;
+    if (adj.zScoreModifier !== 0) {
+      const effective = ANOMALY_ZSCORE_THRESHOLD + adj.zScoreModifier;
+      console.log(chalk.yellow(`    ↳ Z-score threshold: ${ANOMALY_ZSCORE_THRESHOLD} → ${effective.toFixed(1)} (memory-adjusted)`));
+    }
+    if (adj.yieldCooldown) {
+      console.log(chalk.yellow(`    ↳ Supply cooldown ACTIVE (recent churn detected)`));
+    }
+    if (adj.skipSupply) {
+      console.log(chalk.red(`    ↳ Supply BLOCKED (recent failed supply)`));
+    }
+
+    // Run strategies WITH memory adjustments
     const { action } = runStrategies(
-      scenario.market,
-      scenario.wallet,
-      scenario.lending
+      scenario.market, scenario.wallet, scenario.lending,
+      memoryInsight.adjustments
     );
 
     if (action) {
       console.log(chalk.green(`    Decision: ${action.strategy} → ${action.action}`));
       console.log(chalk.green(`    Reason:   ${action.reason}`));
-
-      // Record this decision
-      await memory.recordDecision(
-        action.action,
-        action.reason,
-        scenario.market,
-        'success',
-        { strategy: action.strategy, ...action.params }
-      );
+      await memory.recordDecision(action.action, action.reason, scenario.market, 'success', { strategy: action.strategy, ...action.params });
+      decisions.push({ scenario: i + 1, action: action.action, strategy: action.strategy, memoryDriven: action.params?.memoryAdjusted || adj.yieldCooldown || adj.skipSupply });
     } else {
       console.log(chalk.green('    Decision: HOLD (no action)'));
-      console.log(chalk.green('    Reason:   All strategies evaluated — position is healthy.'));
-      await memory.recordDecision('hold', 'No action needed.', scenario.market, 'success', { strategy: 'none' });
+      const holdReason = adj.yieldCooldown
+        ? 'Memory cooldown active — suppressing supply after recent churn.'
+        : 'All strategies evaluated — position is healthy.';
+      console.log(chalk.green(`    Reason:   ${holdReason}`));
+      await memory.recordDecision('hold', holdReason, scenario.market, 'success', { strategy: 'none', memoryCooldown: adj.yieldCooldown });
+      decisions.push({ scenario: i + 1, action: 'hold', strategy: 'MemoryCooldown', memoryDriven: adj.yieldCooldown });
     }
-
     console.log('');
 
-    // ── Key difference ────────────────────────────────────────────
-    if (i >= 2 && decisionCount > 0) {
-      console.log(chalk.bold.magenta('  KEY DIFFERENCE:'));
-      if (comparison.similar.length > 0) {
-        const lastSimilar = comparison.similar[0];
-        console.log(chalk.magenta(`    Last time in similar conditions (${lastSimilar.timestamp}):`));
-        console.log(chalk.magenta(`      Action: ${lastSimilar.action} | Outcome: ${lastSimilar.outcome}`));
-        console.log(chalk.magenta(`    The memory-equipped agent uses this to make faster, more confident decisions.`));
-        console.log(chalk.magenta(`    A memoryless agent would react the same way every time — no learning.`));
+    // ── Highlight when decisions DIFFER ───────────────────────────
+    const statelessVerb = statelessAction ? `${statelessAction.strategy}/${statelessAction.action}` : 'HOLD';
+    const engramVerb = action ? `${action.strategy}/${action.action}` : 'HOLD';
+
+    if (statelessVerb !== engramVerb) {
+      console.log(chalk.bold.bgMagenta.white('  ★ DECISIONS DIFFER — MEMORY CHANGED THE OUTCOME ★'));
+      console.log(chalk.magenta(`    Stateless agent: ${statelessVerb}`));
+      console.log(chalk.magenta(`    Engram (memory): ${engramVerb}`));
+      if (adj.zScoreModifier !== 0) {
+        console.log(chalk.magenta(`    Why: Memory lowered Z-score threshold from ${ANOMALY_ZSCORE_THRESHOLD} to ${(ANOMALY_ZSCORE_THRESHOLD + adj.zScoreModifier).toFixed(1)}`));
+        console.log(chalk.magenta(`    The stateless agent needs Z > ${ANOMALY_ZSCORE_THRESHOLD} to act. Engram learned from past withdrawals.`));
+      }
+      if (adj.yieldCooldown) {
+        console.log(chalk.magenta(`    Why: Memory detected supply→withdraw churn pattern. Suppressing supply to avoid oscillation.`));
+        console.log(chalk.magenta(`    The stateless agent would supply and potentially withdraw again next tick.`));
       }
       console.log('');
     }
@@ -266,30 +269,26 @@ async function runDemo() {
     console.log(chalk.gray(`     ${d.reason}`));
   }
 
+  // Highlight divergences
+  const divergences = decisions.filter((d) => d.memoryDriven);
+  console.log('');
+  console.log(chalk.bold.white(`  Memory-Driven Divergences: ${divergences.length} of ${decisions.length} decisions`));
+  for (const d of divergences) {
+    console.log(chalk.magenta(`    Scenario ${d.scenario}: ${d.strategy}/${d.action} — would not happen without memory`));
+  }
+
   console.log('');
   console.log(chalk.bold.white('  Why Memory Matters:'));
-  console.log(chalk.gray('    - Agent recalls that anomaly patterns preceded market drops'));
-  console.log(chalk.gray('    - Past withdrawal decisions inform future risk thresholds'));
-  console.log(chalk.gray('    - Repeated patterns get faster, more confident responses'));
-  console.log(chalk.gray('    - Without memory, every tick starts from zero context'));
+  console.log(chalk.gray('    - Lowers anomaly thresholds based on past successful withdrawals'));
+  console.log(chalk.gray('    - Blocks premature supply after supply→withdraw churn'));
+  console.log(chalk.gray('    - Detects subtle anomalies that stateless agents miss'));
+  console.log(chalk.gray('    - Without memory, the agent oscillates and bleeds gas fees'));
   console.log('');
   console.log(chalk.bold.cyan('  Built with: Tether WDK + Cortex Intelligence + Aave V3'));
   console.log(chalk.dim('  Engram — DeFi treasury that remembers.\n'));
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────
+function formatEth(wei) { return `${(Number(wei) / 1e18).toFixed(4)} ETH`; }
+function formatUsdt(base) { return `${(Number(base) / 1e6).toFixed(2)} USDT`; }
 
-function formatEth(wei) {
-  return `${(Number(wei) / 1e18).toFixed(4)} ETH`;
-}
-
-function formatUsdt(base) {
-  return `${(Number(base) / 1e6).toFixed(2)} USDT`;
-}
-
-// ── Run ───────────────────────────────────────────────────────────────
-
-runDemo().catch((err) => {
-  console.error('Demo error:', err);
-  process.exit(1);
-});
+runDemo().catch((err) => { console.error('Demo error:', err); process.exit(1); });

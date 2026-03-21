@@ -92,19 +92,30 @@ export async function tick(config) {
   const decisionCount = await memory.getDecisionCount();
   console.log(ts(`  Decisions in memory: ${chalk.white(decisionCount)}`));
 
-  // Compare with history
-  const comparison = await memory.compareWithHistory({
+  // Compare with history — returns actionable adjustments for strategies
+  const memoryInsight = await memory.compareWithHistory({
     hasAnomalies: marketConditions.anomalies.length > 0,
     healthFactor: parseFloat(lendingState.healthFactor) || null,
     idleUsdt: (walletState.usdtBalance || 0n) > 0n,
   });
-  if (comparison.recommendation) {
-    console.log(ts(`  Memory says: ${chalk.italic(comparison.recommendation)}`));
+  if (memoryInsight.recommendation) {
+    console.log(ts(`  Memory says: ${chalk.italic(memoryInsight.recommendation)}`));
+  }
+  // Show active memory adjustments
+  const adj = memoryInsight.adjustments;
+  if (adj.zScoreModifier !== 0) {
+    console.log(ts(`  ${chalk.yellow('↳ Z-score threshold adjusted by')} ${chalk.bold(adj.zScoreModifier.toFixed(1))}`));
+  }
+  if (adj.yieldCooldown) {
+    console.log(ts(`  ${chalk.yellow('↳ Supply cooldown ACTIVE')} (recent churn detected)`));
+  }
+  if (adj.skipSupply) {
+    console.log(ts(`  ${chalk.red('↳ Supply BLOCKED')} (recent failed supply)`));
   }
 
-  // ── 5. Run strategies ──────────────────────────────────────────
+  // ── 5. Run strategies (with memory adjustments) ────────────────
   console.log(ts(chalk.yellow('Evaluating strategies...')));
-  const { action, allResults } = runStrategies(marketConditions, walletState, lendingState);
+  const { action, allResults } = runStrategies(marketConditions, walletState, lendingState, memoryInsight.adjustments);
 
   for (const r of allResults) {
     const status = r.result ? chalk.green('TRIGGERED') : chalk.gray('no action');

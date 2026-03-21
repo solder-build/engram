@@ -48,24 +48,42 @@ const ANOMALY_ZSCORE_THRESHOLD = Number(process.env.ANOMALY_ZSCORE_THRESHOLD || 
  * @property {Record<string, any>} params - Parameters for execution
  */
 
+/**
+ * @typedef {Object} MemoryAdjustments
+ * @property {number} zScoreModifier - Adjusts anomaly threshold (negative = more sensitive)
+ * @property {boolean} yieldCooldown - If true, suppress yield supply temporarily
+ * @property {boolean} urgencyBoost - If true, act faster on risk-off
+ * @property {boolean} skipSupply - If true, block supply entirely
+ */
+
+/** @type {MemoryAdjustments} */
+const NO_MEMORY = { zScoreModifier: 0, yieldCooldown: false, urgencyBoost: false, skipSupply: false };
+
 // ── Strategy 1: RiskOff ───────────────────────────────────────────────
 
 /**
  * When anomalies are detected in market data (Z-score spikes above threshold),
  * withdraw all funds from Aave and hold USDT — capital preservation.
  *
+ * MEMORY EFFECT: Past successful withdrawals lower the Z-score threshold,
+ * making the agent more sensitive to anomalies it has seen before.
+ *
  * @param {CortexData} cortexData
  * @param {WalletState} _walletState
  * @param {LendingState} lendingState
+ * @param {MemoryAdjustments} memAdj
  * @returns {StrategyAction | null}
  */
-function evaluateRiskOff(cortexData, _walletState, lendingState) {
+function evaluateRiskOff(cortexData, _walletState, lendingState, memAdj = NO_MEMORY) {
   const hasAnomalies = cortexData.anomalies && cortexData.anomalies.length > 0;
   if (!hasAnomalies) return null;
 
-  // Check if any anomaly exceeds our threshold
+  // Memory adjusts the threshold: past successful withdrawals make agent more sensitive
+  const effectiveThreshold = ANOMALY_ZSCORE_THRESHOLD + memAdj.zScoreModifier;
+
+  // Check if any anomaly exceeds our (memory-adjusted) threshold
   const severeAnomalies = cortexData.anomalies.filter((a) =>
-    a.anomalies.some((d) => Math.abs(d.zScore) > ANOMALY_ZSCORE_THRESHOLD)
+    a.anomalies.some((d) => Math.abs(d.zScore) > effectiveThreshold)
   );
 
   if (severeAnomalies.length === 0) return null;
@@ -78,14 +96,20 @@ function evaluateRiskOff(cortexData, _walletState, lendingState) {
     ...severeAnomalies.flatMap((a) => a.anomalies.map((d) => Math.abs(d.zScore)))
   );
 
+  const memNote = memAdj.zScoreModifier !== 0
+    ? ` Memory adjusted threshold from ${ANOMALY_ZSCORE_THRESHOLD} to ${effectiveThreshold.toFixed(1)}.`
+    : '';
+
   return {
     strategy: 'RiskOff',
     action: 'withdraw',
-    reason: `Market anomaly detected (Z-score ${worstZScore.toFixed(1)}) across ${severeAnomalies.length} market(s). Withdrawing from Aave to preserve capital.`,
-    priority: 1,
+    reason: `Market anomaly detected (Z-score ${worstZScore.toFixed(1)}) across ${severeAnomalies.length} market(s). Withdrawing from Aave to preserve capital.${memNote}`,
+    priority: memAdj.urgencyBoost ? 0 : 1, // Higher urgency if memory says act fast
     params: {
       markets: severeAnomalies.map((a) => a.market),
       worstZScore,
+      effectiveThreshold,
+      memoryAdjusted: memAdj.zScoreModifier !== 0,
       withdrawAll: true,
     },
   };
@@ -97,14 +121,25 @@ function evaluateRiskOff(cortexData, _walletState, lendingState) {
  * When idle USDT balance exceeds threshold and no anomalies detected,
  * supply to Aave for yield generation.
  *
+ * MEMORY EFFECTS:
+ * - yieldCooldown: blocks supply if recent supply was followed by a withdrawal (churn)
+ * - skipSupply: blocks supply if recent supply had a failed outcome
+ *
  * @param {CortexData} cortexData
  * @param {WalletState} walletState
  * @param {LendingState} _lendingState
+ * @param {MemoryAdjustments} memAdj
  * @returns {StrategyAction | null}
  */
-function evaluateYieldOptimize(cortexData, walletState, _lendingState) {
+function evaluateYieldOptimize(cortexData, walletState, _lendingState, memAdj = NO_MEMORY) {
   // Don't supply if anomalies are present
   if (cortexData.anomalies && cortexData.anomalies.length > 0) return null;
+
+  // Memory: block supply if recent supply failed
+  if (memAdj.skipSupply) return null;
+
+  // Memory: cooldown if recent churn (supply→withdraw→supply oscillation)
+  if (memAdj.yieldCooldown) return null;
 
   const usdtBalance = walletState.usdtBalance || 0n;
   if (usdtBalance < IDLE_USDT_THRESHOLD) return null;
@@ -130,9 +165,10 @@ function evaluateYieldOptimize(cortexData, walletState, _lendingState) {
  * @param {CortexData} _cortexData
  * @param {WalletState} walletState
  * @param {LendingState} lendingState
+ * @param {MemoryAdjustments} _memAdj
  * @returns {StrategyAction | null}
  */
-function evaluateRebalance(_cortexData, walletState, lendingState) {
+function evaluateRebalance(_cortexData, walletState, lendingState, _memAdj = NO_MEMORY) {
   const hf = parseFloat(lendingState.healthFactor || '0');
 
   // health factor of 0 means no position, N/A means error
@@ -185,16 +221,18 @@ const STRATEGIES = [
 
 /**
  * Run all strategies against current state and pick the highest-priority action.
+ * Memory adjustments modify strategy thresholds and can block/boost actions.
  *
  * @param {CortexData} cortexData
  * @param {WalletState} walletState
  * @param {LendingState} lendingState
+ * @param {MemoryAdjustments} [memAdj] - Memory-driven threshold adjustments
  * @returns {{ action: StrategyAction | null, allResults: Array<{ name: string, result: StrategyAction | null }> }}
  */
-export function runStrategies(cortexData, walletState, lendingState) {
+export function runStrategies(cortexData, walletState, lendingState, memAdj = NO_MEMORY) {
   const allResults = STRATEGIES.map((s) => ({
     name: s.name,
-    result: s.evaluate(cortexData, walletState, lendingState),
+    result: s.evaluate(cortexData, walletState, lendingState, memAdj),
   }));
 
   // Pick highest priority (lowest number) non-null result
@@ -211,6 +249,7 @@ export function runStrategies(cortexData, walletState, lendingState) {
 /**
  * Evaluate what the agent would do without memory (stateless).
  * Used in demo to contrast with memory-informed decisions.
+ * Explicitly passes NO_MEMORY to prove the difference.
  *
  * @param {CortexData} cortexData
  * @param {WalletState} walletState
@@ -218,7 +257,7 @@ export function runStrategies(cortexData, walletState, lendingState) {
  * @returns {StrategyAction | null}
  */
 export function evaluateStateless(cortexData, walletState, lendingState) {
-  const { action } = runStrategies(cortexData, walletState, lendingState);
+  const { action } = runStrategies(cortexData, walletState, lendingState, NO_MEMORY);
   return action;
 }
 
@@ -229,7 +268,7 @@ function formatUsdt(amount) {
   return `${(Number(amount) / 1e6).toFixed(2)} USDT`;
 }
 
-export { STRATEGIES, IDLE_USDT_THRESHOLD, HEALTH_FACTOR_TARGET, ANOMALY_ZSCORE_THRESHOLD };
+export { STRATEGIES, IDLE_USDT_THRESHOLD, HEALTH_FACTOR_TARGET, ANOMALY_ZSCORE_THRESHOLD, NO_MEMORY };
 
 export default {
   runStrategies,
