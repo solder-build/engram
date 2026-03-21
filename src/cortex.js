@@ -254,6 +254,97 @@ export async function getMarketConditions() {
   return { trending, anomalies, timestamp: new Date().toISOString() };
 }
 
+// ── DeFi Data Sources ─────────────────────────────────────────────────
+// On-chain DeFi signals supplement Cortex prediction market intelligence.
+
+/**
+ * Fetch USDT/USD peg status from CoinGecko free API.
+ * Detects stablecoin depegs that prediction markets won't catch.
+ *
+ * @returns {Promise<{ price: number, depegRisk: boolean, deviation: number }>}
+ */
+export async function getUsdtPegStatus() {
+  try {
+    const res = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=usd&include_24hr_change=true',
+      { signal: AbortSignal.timeout(5000) }
+    );
+    if (!res.ok) throw new Error(`CoinGecko ${res.status}`);
+    const data = await res.json();
+    const price = data.tether?.usd || 1.0;
+    const deviation = Math.abs(1.0 - price);
+    return {
+      price,
+      depegRisk: deviation > 0.005, // > 0.5% deviation = risk
+      deviation,
+      change24h: data.tether?.usd_24h_change || 0,
+    };
+  } catch {
+    return { price: 1.0, depegRisk: false, deviation: 0, change24h: 0 };
+  }
+}
+
+/**
+ * Fetch ETH gas price from public RPC for gas cost awareness.
+ *
+ * @returns {Promise<{ gasGwei: number, isExpensive: boolean }>}
+ */
+export async function getGasPrice() {
+  try {
+    const res = await fetch('https://eth.drpc.org', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'eth_gasPrice', params: [], id: 1 }),
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = await res.json();
+    const gasWei = parseInt(data.result, 16);
+    const gasGwei = gasWei / 1e9;
+    return {
+      gasGwei: Math.round(gasGwei * 10) / 10,
+      isExpensive: gasGwei > 50, // > 50 gwei = expensive
+    };
+  } catch {
+    return { gasGwei: 0, isExpensive: false };
+  }
+}
+
+/**
+ * Enhanced market conditions with DeFi data layered on top of prediction markets.
+ *
+ * @returns {Promise<{ trending: any[], anomalies: any[], defi: { usdtPeg: any, gas: any }, timestamp: string }>}
+ */
+export async function getMarketConditionsEnhanced() {
+  // Fetch prediction market data and DeFi data in parallel
+  const [baseConditions, usdtPeg, gas] = await Promise.all([
+    getMarketConditions(),
+    getUsdtPegStatus(),
+    getGasPrice(),
+  ]);
+
+  // Add USDT depeg as a synthetic anomaly if detected
+  if (usdtPeg.depegRisk) {
+    baseConditions.anomalies.push({
+      market: 'usdt-peg',
+      anomalies: [{
+        price: usdtPeg.price,
+        zScore: usdtPeg.deviation * 1000, // Scale deviation to Z-score-like value
+        timestamp: new Date().toISOString(),
+        source: 'defi-onchain',
+      }],
+      mean: 1.0,
+      stdDev: 0.001,
+      tradeCount: 0,
+      source: 'coingecko',
+    });
+  }
+
+  return {
+    ...baseConditions,
+    defi: { usdtPeg, gas },
+  };
+}
+
 export default {
   getHealth,
   searchMarkets,
@@ -265,4 +356,7 @@ export default {
   getVolumeProfile,
   searchMarketMemory,
   getMarketConditions,
+  getMarketConditionsEnhanced,
+  getUsdtPegStatus,
+  getGasPrice,
 };

@@ -13,7 +13,7 @@ import AaveProtocolEvm from '@tetherto/wdk-protocol-lending-aave-evm';
 /** @typedef {import('@tetherto/wdk-wallet-evm').WalletAccountEvm} WalletAccountEvm */
 
 // ── Config ────────────────────────────────────────────────────────────
-const ETH_SEPOLIA_RPC = process.env.ETH_SEPOLIA_RPC || 'https://rpc.sepolia.org';
+const ETH_SEPOLIA_RPC = process.env.ETH_SEPOLIA_RPC || 'https://1rpc.io/sepolia';
 const ARB_SEPOLIA_RPC = process.env.ARB_SEPOLIA_RPC || 'https://sepolia-rollup.arbitrum.io/rpc';
 
 // Aave V3 on Sepolia — chain id 11155111

@@ -58,20 +58,29 @@ export async function tick(config) {
   console.log(ts(`  ETH:     ${chalk.white(formatEth(walletState.ethBalance))}`));
   console.log(ts(`  USDT:    ${chalk.white(formatUsdt(walletState.usdtBalance || 0n))}`));
 
-  // ── 2. Market conditions ────────────────────────────────────────
-  console.log(ts(chalk.yellow('Querying market conditions (Cortex)...')));
+  // ── 2. Market conditions (Cortex + DeFi data) ──────────────────
+  console.log(ts(chalk.yellow('Querying market conditions (Cortex + DeFi)...')));
   let marketConditions;
   if (demoMode) {
     marketConditions = getDemoMarketConditions();
   } else {
-    marketConditions = await cortex.getMarketConditions();
+    marketConditions = await cortex.getMarketConditionsEnhanced();
   }
   console.log(ts(`  Trending markets: ${chalk.white(marketConditions.trending.length)}`));
   console.log(ts(`  Anomalies found:  ${chalk.white(marketConditions.anomalies.length)}`));
   if (marketConditions.anomalies.length > 0) {
     for (const a of marketConditions.anomalies) {
-      console.log(ts(`    ${chalk.red('!')} ${a.market}: ${a.anomalies.length} anomalous trades`));
+      const source = a.source ? ` [${a.source}]` : '';
+      console.log(ts(`    ${chalk.red('!')} ${a.market}: ${a.anomalies.length} anomalous trades${source}`));
     }
+  }
+  // Show DeFi data if available
+  if (marketConditions.defi) {
+    const peg = marketConditions.defi.usdtPeg;
+    const gas = marketConditions.defi.gas;
+    const pegColor = peg.depegRisk ? chalk.red : chalk.green;
+    console.log(ts(`  USDT peg: ${pegColor(`$${peg.price.toFixed(4)}`)} (deviation: ${(peg.deviation * 100).toFixed(2)}%)`));
+    console.log(ts(`  Gas: ${gas.isExpensive ? chalk.red(gas.gasGwei + ' gwei') : chalk.green(gas.gasGwei + ' gwei')}`));
   }
 
   // ── 3. Lending state ────────────────────────────────────────────
