@@ -244,7 +244,7 @@ This is a hackathon MVP built in a few days. It works, it demonstrates the core 
 - **3 strategies.** A production agent would have 10+ strategies covering more DeFi protocols, cross-chain arbitrage, gas optimization, etc.
 - **Local JSON memory.** The `data/memory.json` file is simple and portable, but a production system would use Cortex's ClickHouse backend for queryable, persistent, cross-session memory.
 - **No UI.** Terminal output only. A production version would have a dashboard showing decision history, strategy performance, and real-time position monitoring.
-- **No LLM in the loop.** The strategy engine is deterministic rule-based logic. A future version could use the memory context as input to an LLM for more nuanced reasoning -- the memory layer is designed to support this.
+- **Deterministic by design.** The strategy engine uses auditable rule-based logic -- no LLM in the decision loop. For financial agents managing real capital, we believe deterministic rules with memory-adjusted thresholds are safer and more predictable than black-box LLM reasoning. You can trace exactly why Engram made every decision. The memory layer is designed to optionally feed into an LLM for more nuanced reasoning in a future version.
 
 ## How It's Different
 

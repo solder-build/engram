@@ -22,6 +22,7 @@ const ANOMALY_ZSCORE_THRESHOLD = Number(process.env.ANOMALY_ZSCORE_THRESHOLD || 
  * @property {Array} trending
  * @property {Array<{ market: string, anomalies: Array<{ zScore: number }> }>} anomalies
  * @property {string} timestamp
+ * @property {{ usdtPeg?: { price: number, depegRisk: boolean }, gas?: { gasGwei: number, isExpensive: boolean } }} [defi]
  */
 
 /**
@@ -141,17 +142,23 @@ function evaluateYieldOptimize(cortexData, walletState, _lendingState, memAdj = 
   // Memory: cooldown if recent churn (supply→withdraw→supply oscillation)
   if (memAdj.yieldCooldown) return null;
 
+  // Gas awareness: don't supply when gas is expensive (tx cost may exceed yield)
+  const gas = cortexData.defi?.gas;
+  if (gas && gas.isExpensive) return null;
+
   const usdtBalance = walletState.usdtBalance || 0n;
   if (usdtBalance < IDLE_USDT_THRESHOLD) return null;
 
+  const gasNote = gas ? ` Gas: ${gas.gasGwei} gwei.` : '';
   return {
     strategy: 'YieldOptimize',
     action: 'supply',
-    reason: `Idle USDT balance (${formatUsdt(usdtBalance)}) exceeds threshold. No anomalies detected — supplying to Aave for yield.`,
+    reason: `Idle USDT balance (${formatUsdt(usdtBalance)}) exceeds threshold. No anomalies detected — supplying to Aave for yield.${gasNote}`,
     priority: 3,
     params: {
       amount: usdtBalance,
       amountFormatted: formatUsdt(usdtBalance),
+      gasGwei: gas?.gasGwei || 0,
     },
   };
 }

@@ -1,33 +1,43 @@
 /**
  * Engram — Cortex Client (Market Intelligence)
  *
- * HTTP client for the Cortex staging API and local anomaly detection.
- * Provides market search, trending data, trade history, and analytics
- * that the agent uses to make treasury decisions.
+ * Primary: self-contained market-intel.js (CoinGecko + local Z-score).
+ * Fallback: Cortex staging API when CORTEX_API_URL is configured.
+ *
+ * The agent works 100% without any API keys. Cortex enriches the data
+ * when available but is never required.
  */
 
-const CORTEX_API_URL =
-  process.env.CORTEX_API_URL ||
-  'https://cortex-api-staging-871482515924.asia-southeast1.run.app';
+import { getMarketIntel } from './market-intel.js';
 
+const CORTEX_API_URL = process.env.CORTEX_API_URL || '';
+const CORTEX_API_KEY = process.env.CORTEX_API_KEY || '';
 const DEFAULT_TIMEOUT = 10_000;
 
-// ── HTTP helpers ──────────────────────────────────────────────────────
+/** Whether the Cortex API is configured and should be tried */
+const CORTEX_ENABLED = Boolean(CORTEX_API_URL);
+
+// ── HTTP helpers (Cortex-specific) ────────────────────────────────────
 
 /**
  * @param {string} path
  * @param {Record<string, string>} [params]
  * @returns {Promise<any>}
  */
-async function get(path, params = {}) {
+async function cortexGet(path, params = {}) {
+  if (!CORTEX_ENABLED) throw new Error('Cortex API not configured');
+
   const url = new URL(path, CORTEX_API_URL);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   }
 
+  const headers = { Accept: 'application/json' };
+  if (CORTEX_API_KEY) headers['Authorization'] = `Bearer ${CORTEX_API_KEY}`;
+
   const res = await fetch(url.toString(), {
     signal: AbortSignal.timeout(DEFAULT_TIMEOUT),
-    headers: { 'Accept': 'application/json' },
+    headers,
   });
 
   if (!res.ok) {
@@ -38,49 +48,49 @@ async function get(path, params = {}) {
   return await res.json();
 }
 
-// ── REST API wrappers ─────────────────────────────────────────────────
+// ── Cortex REST API wrappers (optional enrichment) ────────────────────
 
 /** Health check */
 export async function getHealth() {
-  return await get('/health');
+  return await cortexGet('/health');
 }
 
 /**
- * Search prediction markets.
+ * Search prediction markets (Cortex only).
  * @param {string} query
  */
 export async function searchMarkets(query) {
-  return await get('/api/v1/predictions/markets/search', { q: query });
+  return await cortexGet('/api/v1/predictions/markets/search', { q: query });
 }
 
-/** Get trending prediction markets. */
+/** Get trending prediction markets (Cortex only). */
 export async function getTrendingMarkets() {
-  return await get('/api/v1/predictions/markets/trending');
+  return await cortexGet('/api/v1/predictions/markets/trending');
 }
 
 /**
- * Get detail for a single market.
+ * Get detail for a single market (Cortex only).
  * @param {string} slug
  */
 export async function getMarketDetail(slug) {
-  return await get(`/api/v1/predictions/markets/${encodeURIComponent(slug)}`);
+  return await cortexGet(`/api/v1/predictions/markets/${encodeURIComponent(slug)}`);
 }
 
 /**
- * Get recent trades for a market.
+ * Get recent trades for a market (Cortex only).
  * @param {string} slug
  */
 export async function getMarketTrades(slug) {
-  return await get(`/api/v1/predictions/markets/${encodeURIComponent(slug)}/trades`);
+  return await cortexGet(`/api/v1/predictions/markets/${encodeURIComponent(slug)}/trades`);
 }
 
-// ── Local analytics (when REST doesn't expose these directly) ─────────
+// ── Local analytics ───────────────────────────────────────────────────
+// These are kept for backward compatibility but the real anomaly
+// detection now lives in market-intel.js using rolling Z-scores.
 
 /**
- * Simple Z-score anomaly detection on trade prices.
- *
- * Fetches trade history, computes a rolling average and standard deviation,
- * then flags any price point with |Z| > threshold as anomalous.
+ * Simple Z-score anomaly detection on trade prices (Cortex trades).
+ * Falls back gracefully if Cortex is unavailable.
  *
  * @param {string} slug - Market slug
  * @param {number} [threshold=2.5] - Z-score threshold
@@ -92,7 +102,6 @@ export async function detectAnomalies(slug, threshold = 2.5) {
     const data = await getMarketTrades(slug);
     trades = Array.isArray(data) ? data : data?.trades || data?.data || [];
   } catch {
-    // If API is unavailable, return empty result
     return { anomalies: [], mean: 0, stdDev: 0, tradeCount: 0 };
   }
 
@@ -124,12 +133,9 @@ export async function detectAnomalies(slug, threshold = 2.5) {
 }
 
 /**
- * Compute a simple trend from trade prices.
- * Returns direction (up/down/flat) and magnitude.
- *
+ * Compute a simple trend from Cortex trade prices.
  * @param {string} slug
  * @param {'1h' | '4h' | '1d'} [interval='1h']
- * @returns {Promise<{ direction: string, magnitude: number, priceChange: number, startPrice: number, endPrice: number }>}
  */
 export async function getMarketTrend(slug, interval = '1h') {
   let trades;
@@ -163,10 +169,8 @@ export async function getMarketTrend(slug, interval = '1h') {
 }
 
 /**
- * Volume profile from trade data — bucket trades by price range.
- *
+ * Volume profile from Cortex trade data.
  * @param {string} slug
- * @returns {Promise<{ buckets: Array<{ priceRange: string, volume: number, count: number }>, totalVolume: number }>}
  */
 export async function getVolumeProfile(slug) {
   let trades;
@@ -205,11 +209,9 @@ export async function getVolumeProfile(slug) {
 }
 
 /**
- * Search market memory — find markets matching a query, with result limit.
- *
+ * Search market memory (Cortex only, returns [] if unavailable).
  * @param {string} query
  * @param {number} [limit=5]
- * @returns {Promise<any>}
  */
 export async function searchMarketMemory(query, limit = 5) {
   try {
@@ -221,47 +223,11 @@ export async function searchMarketMemory(query, limit = 5) {
   }
 }
 
-/**
- * Get a summary of current market conditions for the agent.
- * Pulls trending markets and runs anomaly detection on top ones.
- *
- * @returns {Promise<{ trending: any[], anomalies: any[], timestamp: string }>}
- */
-export async function getMarketConditions() {
-  let trending = [];
-  try {
-    const data = await getTrendingMarkets();
-    trending = Array.isArray(data) ? data : data?.markets || data?.data || [];
-  } catch {
-    // Cortex API may be down
-  }
-
-  const anomalies = [];
-  // Check top 3 trending markets for anomalies
-  for (const market of trending.slice(0, 3)) {
-    const slug = market.slug || market.id;
-    if (!slug) continue;
-    try {
-      const result = await detectAnomalies(slug);
-      if (result.anomalies.length > 0) {
-        anomalies.push({ market: slug, ...result });
-      }
-    } catch {
-      // skip
-    }
-  }
-
-  return { trending, anomalies, timestamp: new Date().toISOString() };
-}
-
 // ── DeFi Data Sources ─────────────────────────────────────────────────
-// On-chain DeFi signals supplement Cortex prediction market intelligence.
 
 /**
  * Fetch USDT/USD peg status from CoinGecko free API.
- * Detects stablecoin depegs that prediction markets won't catch.
- *
- * @returns {Promise<{ price: number, depegRisk: boolean, deviation: number }>}
+ * @returns {Promise<{ price: number, depegRisk: boolean, deviation: number, change24h: number }>}
  */
 export async function getUsdtPegStatus() {
   try {
@@ -275,7 +241,7 @@ export async function getUsdtPegStatus() {
     const deviation = Math.abs(1.0 - price);
     return {
       price,
-      depegRisk: deviation > 0.005, // > 0.5% deviation = risk
+      depegRisk: deviation > 0.005,
       deviation,
       change24h: data.tether?.usd_24h_change || 0,
     };
@@ -285,8 +251,7 @@ export async function getUsdtPegStatus() {
 }
 
 /**
- * Fetch ETH gas price from public RPC for gas cost awareness.
- *
+ * Fetch ETH gas price from public RPC.
  * @returns {Promise<{ gasGwei: number, isExpensive: boolean }>}
  */
 export async function getGasPrice() {
@@ -302,20 +267,82 @@ export async function getGasPrice() {
     const gasGwei = gasWei / 1e9;
     return {
       gasGwei: Math.round(gasGwei * 10) / 10,
-      isExpensive: gasGwei > 50, // > 50 gwei = expensive
+      isExpensive: gasGwei > 50,
     };
   } catch {
     return { gasGwei: 0, isExpensive: false };
   }
 }
 
+// ── Primary entry point ───────────────────────────────────────────────
+
 /**
- * Enhanced market conditions with DeFi data layered on top of prediction markets.
+ * Get market conditions — the main function strategies.js calls.
+ *
+ * Flow:
+ *   1. Always fetch live data from market-intel.js (CoinGecko + local Z-score)
+ *   2. If Cortex API is configured, try to merge Cortex prediction market data
+ *   3. Layer on DeFi data (USDT peg, gas)
+ *   4. Return unified structure matching CortexData typedef
+ *
+ * @returns {Promise<{ trending: any[], anomalies: any[], timestamp: string }>}
+ */
+export async function getMarketConditions() {
+  // Primary: self-contained market intelligence (always works)
+  const intel = await getMarketIntel();
+
+  let conditions = {
+    trending: intel.trending,
+    anomalies: intel.anomalies,
+    timestamp: intel.timestamp,
+    prices: intel.prices,
+    source: 'market-intel',
+  };
+
+  // Optional: merge Cortex prediction market data if API key is set
+  if (CORTEX_ENABLED && CORTEX_API_KEY) {
+    try {
+      const cortexTrending = await getTrendingMarkets();
+      const markets = Array.isArray(cortexTrending)
+        ? cortexTrending
+        : cortexTrending?.markets || cortexTrending?.data || [];
+
+      // Append Cortex trending markets (tagged with source)
+      const cortexTagged = markets.map((m) => ({ ...m, source: 'cortex' }));
+      conditions.trending = [...conditions.trending, ...cortexTagged];
+
+      // Run Cortex anomaly detection on top 3 Cortex markets
+      for (const market of markets.slice(0, 3)) {
+        const slug = market.slug || market.id;
+        if (!slug) continue;
+        try {
+          const result = await detectAnomalies(slug);
+          if (result.anomalies.length > 0) {
+            conditions.anomalies.push({ market: slug, ...result, source: 'cortex' });
+          }
+        } catch {
+          // skip individual market failures
+        }
+      }
+
+      conditions.source = 'market-intel+cortex';
+    } catch (err) {
+      // Cortex failed — that's fine, we have market-intel data
+      console.error(`[cortex] Optional enrichment failed: ${err.message}`);
+    }
+  }
+
+  return conditions;
+}
+
+/**
+ * Enhanced market conditions with DeFi data layered on top.
+ * This is the function agent.js calls.
  *
  * @returns {Promise<{ trending: any[], anomalies: any[], defi: { usdtPeg: any, gas: any }, timestamp: string }>}
  */
 export async function getMarketConditionsEnhanced() {
-  // Fetch prediction market data and DeFi data in parallel
+  // Fetch market-intel data and DeFi data in parallel
   const [baseConditions, usdtPeg, gas] = await Promise.all([
     getMarketConditions(),
     getUsdtPegStatus(),
@@ -326,12 +353,14 @@ export async function getMarketConditionsEnhanced() {
   if (usdtPeg.depegRisk) {
     baseConditions.anomalies.push({
       market: 'usdt-peg',
-      anomalies: [{
-        price: usdtPeg.price,
-        zScore: usdtPeg.deviation * 1000, // Scale deviation to Z-score-like value
-        timestamp: new Date().toISOString(),
-        source: 'defi-onchain',
-      }],
+      anomalies: [
+        {
+          price: usdtPeg.price,
+          zScore: usdtPeg.deviation * 1000,
+          timestamp: new Date().toISOString(),
+          source: 'defi-onchain',
+        },
+      ],
       mean: 1.0,
       stdDev: 0.001,
       tradeCount: 0,
@@ -346,6 +375,12 @@ export async function getMarketConditionsEnhanced() {
 }
 
 export default {
+  // Primary (always works)
+  getMarketConditions,
+  getMarketConditionsEnhanced,
+  getUsdtPegStatus,
+  getGasPrice,
+  // Cortex-specific (require API)
   getHealth,
   searchMarkets,
   getTrendingMarkets,
@@ -355,8 +390,4 @@ export default {
   getMarketTrend,
   getVolumeProfile,
   searchMarketMemory,
-  getMarketConditions,
-  getMarketConditionsEnhanced,
-  getUsdtPegStatus,
-  getGasPrice,
 };
