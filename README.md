@@ -1,8 +1,15 @@
-# Engram
+<p align="center">
+  <img src="assets/logo.png" alt="Engram" width="480" />
+</p>
 
-> Autonomous DeFi treasury agent with persistent market memory -- powered by Cortex intelligence and Tether WDK self-custodial wallets.
+<p align="center">
+  <strong>Autonomous DeFi treasury agent with persistent market memory</strong><br/>
+  Powered by Cortex intelligence and Tether WDK self-custodial wallets
+</p>
 
-**Track:** Autonomous DeFi Agent | **Hackathon:** Tether Hackathon Galactica: WDK Edition 1
+<p align="center">
+  <b>Track:</b> Autonomous DeFi Agent &nbsp;|&nbsp; <b>Hackathon:</b> Tether Hackathon Galactica: WDK Edition 1
+</p>
 
 ## The Problem
 
